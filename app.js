@@ -2,6 +2,16 @@ const JORHAT_CENTER = [26.7509, 94.2037];
 const SUPABASE_URL = 'https://qvnzxljlylccvuslzncj.supabase.co';
 const STORAGE_KEY = 'jorhat_parklive_sb_key';
 
+// Public-launch guardrails
+const STALE_MINUTES = 20;
+const COOLDOWN_MS = 10000; // 10 seconds between crowd actions per spot
+const JORHAT_BOUNDS = {
+  minLat: 26.65,
+  maxLat: 26.85,
+  minLng: 94.08,
+  maxLng: 94.35
+};
+
 const INITIAL_SPOTS = [
   { id: 'gar-ali-1', name: 'Gar-Ali Central Commercial Stretch', zone: 'Gar-Ali', lat: 26.7524, lng: 94.2051, freeSpots: 9, totalSpots: 20, vehicleTypes: ['2w', '4w'], isPaid: false, trustScore: 88, updatedAt: new Date().toISOString() },
   { id: 'at-road-1', name: 'A.T. Road Baruah Chariali Bay', zone: 'A.T. Road', lat: 26.7568, lng: 94.2195, freeSpots: 4, totalSpots: 18, vehicleTypes: ['2w', '4w'], isPaid: false, trustScore: 84, updatedAt: new Date().toISOString() },
@@ -24,18 +34,64 @@ let map = null;
 let markersLayer = null;
 let userMarker = null;
 
+// Tracks last tap timestamp per spot ID
+const lastActionAtBySpot = new Map();
+
 function showToast(msg) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => el.classList.remove('show'), 2400);
+  showToast._t = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function getAgeMinutes(updatedAt) {
+  const ts = Date.parse(updatedAt);
+  if (Number.isNaN(ts)) return 0;
+  return Math.max(0, Math.floor((Date.now() - ts) / 60000));
+}
+
+function formatUpdatedAge(updatedAt) {
+  const mins = getAgeMinutes(updatedAt);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m ago`;
+}
+
+function isSpotStale(spot) {
+  return getAgeMinutes(spot.updatedAt) >= STALE_MINUTES;
 }
 
 function getStatusColor(spot) {
   if (spot.freeSpots <= 0) return 'red';
+  if (isSpotStale(spot)) return 'amber';
   const ratio = spot.freeSpots / Math.max(1, spot.totalSpots);
   return ratio <= 0.25 ? 'amber' : 'green';
+}
+
+function isValidJorhatCoords(lat, lng) {
+  return (
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    lat >= JORHAT_BOUNDS.minLat &&
+    lat <= JORHAT_BOUNDS.maxLat &&
+    lng >= JORHAT_BOUNDS.minLng &&
+    lng <= JORHAT_BOUNDS.maxLng
+  );
+}
+
+function canTapSpot(spotId) {
+  const now = Date.now();
+  const prev = lastActionAtBySpot.get(spotId) || 0;
+  const elapsed = now - prev;
+  if (elapsed < COOLDOWN_MS) {
+    const remainingSec = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
+    showToast(`Please wait ${remainingSec}s before updating this spot again`);
+    return false;
+  }
+  lastActionAtBySpot.set(spotId, now);
+  return true;
 }
 
 function distanceKm(a, b) {
@@ -52,17 +108,19 @@ function distanceKm(a, b) {
 }
 
 function normalizeRow(row) {
+  const total = Math.max(1, Number(row.total_spots) || 1);
+  const free = Math.max(0, Math.min(total, Number(row.free_spots) || 0));
   return {
     id: row.id,
     name: row.name,
     zone: row.zone,
     lat: Number(row.lat),
     lng: Number(row.lng),
-    freeSpots: Number(row.free_spots),
-    totalSpots: Number(row.total_spots),
+    freeSpots: free,
+    totalSpots: total,
     vehicleTypes: Array.isArray(row.vehicle_types) ? row.vehicle_types : ['2w'],
     isPaid: Boolean(row.is_paid),
-    trustScore: Number(row.trust_score ?? 80),
+    trustScore: Math.max(0, Math.min(100, Number(row.trust_score ?? 80))),
     updatedAt: row.updated_at || new Date().toISOString()
   };
 }
@@ -158,11 +216,12 @@ function renderMapMarkers(list) {
   markersLayer.clearLayers();
   list.forEach((spot) => {
     const color = getStatusColor(spot);
+    const staleStyle = isSpotStale(spot) ? 'opacity:0.78;border-style:dashed;' : '';
     const icon = L.divIcon({
       className: '',
       iconSize: [30, 30],
       iconAnchor: [15, 30],
-      html: `<div class="spot-marker ${color}"><span>${spot.freeSpots}</span></div>`
+      html: `<div class="spot-marker ${color}" style="${staleStyle}"><span>${spot.freeSpots}</span></div>`
     });
 
     const marker = L.marker([spot.lat, spot.lng], { icon }).addTo(markersLayer);
@@ -175,14 +234,17 @@ function renderMapMarkers(list) {
 }
 
 async function mutateFreeSpots(spotId, delta) {
+  if (!canTapSpot(spotId)) return;
   const target = spots.find((s) => s.id === spotId);
   if (!target) return;
+
   const nextFree = Math.max(0, Math.min(target.totalSpots, target.freeSpots + delta));
   const nextUpdated = new Date().toISOString();
 
   target.freeSpots = nextFree;
   target.updatedAt = nextUpdated;
   renderAll();
+  showToast(delta < 0 ? 'Marked spot taken (-1)' : 'Marked spot freed (+1)');
 
   if (sbClient) {
     const { error } = await sbClient
@@ -194,15 +256,17 @@ async function mutateFreeSpots(spotId, delta) {
 }
 
 async function verifySpot(spotId) {
+  if (!canTapSpot(spotId)) return;
   const target = spots.find((s) => s.id === spotId);
   if (!target) return;
+
   const nextTrust = Math.min(100, (target.trustScore || 80) + 2);
   const nextUpdated = new Date().toISOString();
 
   target.trustScore = nextTrust;
   target.updatedAt = nextUpdated;
   renderAll();
-  showToast('Spot verified (+2% trust)');
+  showToast('Spot verified & refreshed (+2% trust)');
 
   if (sbClient) {
     const { error } = await sbClient
@@ -227,6 +291,9 @@ function renderList() {
   listEl.innerHTML = filtered
     .map((spot) => {
       const color = getStatusColor(spot);
+      const stale = isSpotStale(spot);
+      const ageText = formatUpdatedAge(spot.updatedAt);
+      const staleTag = stale ? ' • ⚠ Stale (>20m)' : '';
       const veh = spot.vehicleTypes.map((v) => v.toUpperCase()).join(' + ');
       const cost = spot.isPaid ? 'Paid' : 'Free';
       const distText = spot.distKm != null ? ` • ${spot.distKm.toFixed(1)} km` : '';
@@ -239,6 +306,7 @@ function renderList() {
             <div>
               <div class="spot-name">${spot.name}</div>
               <div class="spot-meta">${spot.zone} • ${veh} • ${cost} • Trust ${spot.trustScore}%${distText}</div>
+              <div class="spot-meta">Updated ${ageText}${staleTag}</div>
             </div>
             <span class="count-badge ${color}">${spot.freeSpots}/${spot.totalSpots} free</span>
           </div>
@@ -322,8 +390,10 @@ function locateUser() {
 
 function openInsertModal() {
   const center = map ? map.getCenter() : { lat: JORHAT_CENTER[0], lng: JORHAT_CENTER[1] };
-  document.getElementById('spotLat').value = center.lat.toFixed(4);
-  document.getElementById('spotLng').value = center.lng.toFixed(4);
+  const clampedLat = Math.max(JORHAT_BOUNDS.minLat, Math.min(JORHAT_BOUNDS.maxLat, center.lat));
+  const clampedLng = Math.max(JORHAT_BOUNDS.minLng, Math.min(JORHAT_BOUNDS.maxLng, center.lng));
+  document.getElementById('spotLat').value = clampedLat.toFixed(4);
+  document.getElementById('spotLng').value = clampedLng.toFixed(4);
   document.getElementById('insertModal').classList.add('open');
 }
 
@@ -343,6 +413,11 @@ function closeDbModal() {
 document.addEventListener('DOMContentLoaded', () => {
   initMap();
   renderAll();
+
+  // Refresh "Updated Xm ago" and stale status every 60s
+  setInterval(() => {
+    renderAll();
+  }, 60000);
 
   document.getElementById('searchInput').addEventListener('input', (e) => {
     searchQuery = e.target.value;
@@ -374,9 +449,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const zone = document.getElementById('spotZone').value;
     const lat = Number(document.getElementById('spotLat').value);
     const lng = Number(document.getElementById('spotLng').value);
-    const freeSpots = Math.max(0, Number(document.getElementById('spotFree').value));
-    const totalSpots = Math.max(1, Number(document.getElementById('spotTotal').value));
+    const rawTotal = Math.max(1, Number(document.getElementById('spotTotal').value));
+    const rawFree = Math.max(0, Math.min(rawTotal, Number(document.getElementById('spotFree').value)));
     const isPaid = document.getElementById('spotPaid').value === 'true';
+
+    if (!name) {
+      showToast('Please enter a spot name');
+      return;
+    }
+
+    if (!isValidJorhatCoords(lat, lng)) {
+      showToast(
+        `Coordinates must be near Jorhat (Lat ${JORHAT_BOUNDS.minLat}-${JORHAT_BOUNDS.maxLat}, Lng ${JORHAT_BOUNDS.minLng}-${JORHAT_BOUNDS.maxLng})`
+      );
+      return;
+    }
 
     const vehicleTypes = [];
     if (document.getElementById('veh2w').checked) vehicleTypes.push('2w');
@@ -389,8 +476,8 @@ document.addEventListener('DOMContentLoaded', () => {
       zone,
       lat,
       lng,
-      freeSpots,
-      totalSpots,
+      freeSpots: rawFree,
+      totalSpots: rawTotal,
       vehicleTypes,
       isPaid,
       trustScore: 80,
