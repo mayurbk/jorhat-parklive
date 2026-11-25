@@ -1,0 +1,1830 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Jorhat ParkLive - Real-Time Free Parking Finder</title>
+
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Leaflet.js CSS & JS via unpkg CDN (100% Free & Open Source) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <!-- Lucide Icons via unpkg CDN -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Supabase JS v2 via jsDelivr CDN (100% Free Client SDK) -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+    <style>
+        html, body {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+        }
+
+        /* Full-bleed Leaflet map container */
+        #map {
+            width: 100%;
+            height: 100%;
+            min-height: 300px;
+            z-index: 1;
+            background-color: #e8eef5;
+        }
+
+        /* Hide broken tile images cleanly if offline so custom Jorhat vector streets remain legible */
+        .leaflet-tile-container img.leaflet-tile-error {
+            opacity: 0 !important;
+        }
+
+        /* Pulsing ring animation for available parking pins */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.85); opacity: 0.85; }
+            100% { transform: scale(2.15); opacity: 0; }
+        }
+        .pin-pulse {
+            animation: pulse-ring 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+        }
+
+        /* Hide scrollbars on horizontal filter chips */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* Compact Leaflet attribution styling */
+        .leaflet-control-attribution {
+            font-size: 9px !important;
+            background: rgba(255, 255, 255, 0.88) !important;
+            border-radius: 6px 0 0 0;
+            padding: 1px 5px !important;
+        }
+
+        /* Jorhat street and landmark vector labels */
+        .jorhat-road-label {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            font-size: 10px;
+            font-weight: 700;
+            color: #1e293b;
+            text-shadow: 0 1px 2px rgba(255, 255, 255, 0.96), 0 -1px 2px rgba(255, 255, 255, 0.96);
+            white-space: nowrap;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 md:bg-slate-950 text-slate-800 h-full w-full flex items-center justify-center md:p-4 lg:p-6 select-none">
+
+    <!-- MOBILE-FIRST APP FRAME (Full-screen on mobile, sleek max-w-[430px] mobile shell on desktop) -->
+    <div id="appShell" class="relative w-full h-full md:max-w-[430px] md:h-[860px] md:max-h-[94vh] bg-white md:rounded-[2.5rem] md:shadow-[0_25px_70px_-15px_rgba(0,0,0,0.75)] md:border-[8px] md:border-slate-800 flex flex-col overflow-hidden">
+
+        <!-- Simulated Mobile Status Bar (Desktop Preview Polish) -->
+        <div class="hidden md:flex items-center justify-between px-6 pt-2 pb-1 bg-white text-[11px] font-bold text-slate-700 shrink-0">
+            <span>Jorhat, AS</span>
+            <div class="w-20 h-4 bg-slate-900 rounded-full"></div>
+            <div class="flex items-center gap-1.5">
+                <i data-lucide="wifi" class="w-3 h-3 text-emerald-600"></i>
+                <span>5G</span>
+            </div>
+        </div>
+
+        <!-- 1. TOP APP HEADER, INSERT BUTTON, SEARCH & FILTER BAR -->
+        <header class="bg-white/95 backdrop-blur-md border-b border-slate-200/90 z-30 shadow-sm px-3.5 pt-2.5 pb-2.5 shrink-0">
+            <!-- Brand, DB Status Pill & Top '+ Insert' Button Row -->
+            <div class="flex items-center justify-between gap-2 mb-2.5">
+                <div class="flex items-center gap-2 min-w-0">
+                    <div class="bg-emerald-600 text-white p-2 rounded-2xl shadow-sm shadow-emerald-600/20 flex items-center justify-center shrink-0">
+                        <i data-lucide="car-front" class="w-5 h-5"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <h1 class="font-extrabold text-sm sm:text-base tracking-tight text-slate-900 leading-none truncate">Jorhat ParkLive</h1>
+                        <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+                            <span id="statusDotPing" class="relative flex h-2 w-2 shrink-0">
+                                <span id="statusPingAnim" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                                <span id="statusDotCore" class="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                            </span>
+                            <button
+                                type="button"
+                                onclick="openSupabaseModal()"
+                                id="dbStatusBadge"
+                                class="text-[10px] sm:text-[11px] font-bold text-amber-700 hover:underline flex items-center gap-1"
+                                title="Configure Supabase Publishable/Anon Key"
+                            >
+                                <span id="dbStatusText">Local Demo Mode</span>
+                                <i data-lucide="database" class="w-3 h-3"></i>
+                            </button>
+                            <span class="text-slate-300 text-[10px]">•</span>
+                            <span class="text-[10px] sm:text-[11px] font-medium text-slate-500">
+                                <strong id="totalFreeCount" class="text-slate-800">0</strong> free
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Top Header Actions: '+ Insert' & Live Simulation Toggle -->
+                <div class="flex items-center gap-1.5 shrink-0">
+                    <button
+                        type="button"
+                        id="headerInsertBtn"
+                        onclick="openInsertModal()"
+                        class="flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm shadow-emerald-600/25 transition-all active:scale-95"
+                        title="Insert a new parking spot"
+                    >
+                        <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                        <span>+ Insert</span>
+                    </button>
+
+                    <button
+                        type="button"
+                        id="liveSimBtn"
+                        onclick="toggleLiveSimulation()"
+                        class="flex items-center gap-1 px-2 py-1.5 rounded-xl text-[10px] font-bold border transition-all bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200 active:scale-95"
+                        title="Toggle simulated driver activity"
+                    >
+                        <i data-lucide="radio" class="w-3 h-3 text-slate-500" id="liveSimIcon"></i>
+                        <span id="liveSimText">Sim</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Search Input for Jorhat Localities -->
+            <div class="relative mb-2">
+                <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+                <input
+                    type="text"
+                    id="searchInput"
+                    placeholder="Search Gar-Ali, AT Road, KB Road, JMCH, Na-Ali..."
+                    class="w-full pl-9 pr-8 py-2 bg-slate-100 hover:bg-slate-200/60 focus:bg-white border border-transparent focus:border-emerald-500 rounded-xl text-xs font-medium text-slate-800 placeholder:text-slate-400 outline-none transition-all"
+                />
+                <button
+                    type="button"
+                    id="clearSearchBtn"
+                    onclick="clearSearch()"
+                    class="hidden absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    title="Clear search"
+                >
+                    <i data-lucide="x-circle" class="w-4 h-4"></i>
+                </button>
+            </div>
+
+            <!-- Interactive Filter Pills -->
+            <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5" id="filterBar">
+                <button type="button" onclick="setFilter('all')" data-filter="all" class="filter-chip active px-3 py-1.5 rounded-full text-[11px] font-bold bg-slate-900 text-white shadow-sm transition-all whitespace-nowrap">
+                    All
+                </button>
+                <button type="button" onclick="setFilter('free')" data-filter="free" class="filter-chip px-3 py-1.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all whitespace-nowrap flex items-center gap-1">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span> Free Only
+                </button>
+                <button type="button" onclick="setFilter('2W')" data-filter="2W" class="filter-chip px-3 py-1.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all whitespace-nowrap">
+                    2-Wheeler
+                </button>
+                <button type="button" onclick="setFilter('4W')" data-filter="4W" class="filter-chip px-3 py-1.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all whitespace-nowrap">
+                    4-Wheeler
+                </button>
+                <button type="button" onclick="setFilter('near')" data-filter="near" class="filter-chip px-3 py-1.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all whitespace-nowrap flex items-center gap-1">
+                    <i data-lucide="navigation-2" class="w-3 h-3 text-blue-600"></i> Near Me
+                </button>
+            </div>
+        </header>
+
+        <!-- 2. INTERACTIVE FULL-SCREEN LEAFLET MAP AREA -->
+        <main class="relative flex-1 w-full overflow-hidden">
+            <div id="map"></div>
+
+            <!-- Compact Status Legend & Map Source Indicator (Top Left) -->
+            <div class="absolute top-3 left-3 z-20 bg-white/95 backdrop-blur-md px-2.5 py-2 rounded-2xl shadow-md border border-slate-200/80 text-[10px] font-semibold flex flex-col gap-1">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                    <span class="text-slate-700">Available</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                    <span class="text-slate-700">Limited</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+                    <span class="text-slate-700">Full</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2.5 h-2.5 rounded-full bg-blue-600"></span>
+                    <span class="text-slate-700">Picked Pin / You</span>
+                </div>
+                <div class="pt-1 mt-0.5 border-t border-slate-100 text-[9px] text-slate-500 font-semibold" id="tileSourceBadge">
+                    Map: Esri World Street
+                </div>
+            </div>
+
+            <!-- Floating Map Utility Controls (Top Right): GPS Locate, Reset View, Toggle Landmark Overlay -->
+            <div class="absolute top-3 right-3 z-20 flex flex-col gap-2">
+                <button
+                    type="button"
+                    onclick="locateUser()"
+                    title="Center on my GPS location"
+                    class="bg-white hover:bg-slate-50 text-blue-600 p-2.5 rounded-2xl shadow-md border border-slate-200 transition-all active:scale-95 flex items-center justify-center"
+                >
+                    <i data-lucide="locate-fixed" class="w-5 h-5"></i>
+                </button>
+                <button
+                    type="button"
+                    onclick="recenterJorhat()"
+                    title="Reset map view to Jorhat"
+                    class="bg-white hover:bg-slate-50 text-slate-700 p-2.5 rounded-2xl shadow-md border border-slate-200 transition-all active:scale-95 flex items-center justify-center"
+                >
+                    <i data-lucide="compass" class="w-5 h-5"></i>
+                </button>
+                <button
+                    type="button"
+                    id="toggleGridBtn"
+                    onclick="toggleVectorGrid()"
+                    title="Toggle Jorhat streets & landmark overlay"
+                    class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 p-2.5 rounded-2xl shadow-md border border-emerald-200 transition-all active:scale-95 flex items-center justify-center"
+                >
+                    <i data-lucide="layers" class="w-5 h-5"></i>
+                </button>
+            </div>
+
+            <!-- Subtle Toast Notification Banner -->
+            <div id="activityToast" class="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-30 opacity-0 transition-all duration-300 transform -translate-y-2 w-[90%] max-w-[360px]">
+                <div class="bg-slate-900/95 backdrop-blur-md text-white px-3.5 py-2 rounded-2xl shadow-xl text-[11px] font-medium flex items-center gap-2 border border-slate-700/60">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0 animate-pulse"></span>
+                    <span id="activityToastText" class="truncate">Ready in Jorhat</span>
+                </div>
+            </div>
+
+            <!-- Floating Action Buttons Above Bottom Drawer: Nearby List & Prominent '+ Insert / Report Spot' -->
+            <div class="absolute bottom-20 left-3 right-3 z-20 flex items-center justify-between gap-2 pointer-events-none">
+                <button
+                    type="button"
+                    onclick="toggleListDrawer()"
+                    class="pointer-events-auto bg-white hover:bg-slate-50 text-slate-800 font-bold text-xs px-3 py-2.5 rounded-2xl shadow-lg border border-slate-200 flex items-center gap-1.5 active:scale-95 transition-all shrink-0"
+                >
+                    <i data-lucide="list" class="w-4 h-4 text-slate-600"></i>
+                    <span>Nearby (<span id="zoneCountBadge">8</span>)</span>
+                </button>
+
+                <button
+                    type="button"
+                    id="fabInsertSpotBtn"
+                    onclick="openInsertModal()"
+                    class="pointer-events-auto bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs px-3.5 py-2.5 rounded-2xl shadow-xl shadow-emerald-600/35 flex items-center gap-1.5 active:scale-95 transition-all"
+                >
+                    <i data-lucide="plus-circle" class="w-4 h-4 shrink-0"></i>
+                    <span>+ Insert / Report Spot</span>
+                </button>
+            </div>
+
+            <!-- 3A. COLLAPSIBLE NEARBY SPOTS LIST DRAWER -->
+            <div id="listDrawer" class="absolute inset-x-0 bottom-0 z-30 bg-white rounded-t-3xl shadow-[0_-10px_30px_rgba(0,0,0,0.12)] border-t border-slate-200 transition-all duration-300 ease-out flex flex-col" style="height: 64px;">
+                <button type="button" onclick="toggleListDrawer()" class="w-full px-4 py-2.5 flex flex-col items-center justify-center shrink-0 focus:outline-none">
+                    <div class="w-10 h-1 bg-slate-300 rounded-full mb-1.5"></div>
+                    <div class="w-full flex items-center justify-between">
+                        <span class="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
+                            <i data-lucide="map-pin" class="w-3.5 h-3.5 text-emerald-600"></i>
+                            <span>Nearby Jorhat Parking Zones</span>
+                        </span>
+                        <span id="drawerExpandHint" class="text-[11px] font-semibold text-emerald-600 flex items-center gap-0.5">
+                            View List <i data-lucide="chevron-up" class="w-3.5 h-3.5"></i>
+                        </span>
+                    </div>
+                </button>
+
+                <div id="spotListContainer" class="flex-1 overflow-y-auto px-3.5 pb-5 space-y-2.5">
+                    <!-- Populated dynamically via JS -->
+                </div>
+            </div>
+
+            <!-- 3B. SPOT DETAIL BOTTOM SHEET -->
+            <div id="spotDetailSheet" class="absolute inset-x-0 bottom-0 z-40 bg-white rounded-t-3xl shadow-[0_-12px_40px_rgba(0,0,0,0.22)] border-t border-slate-200 p-4 transform translate-y-full transition-transform duration-300 ease-out max-h-[88%] overflow-y-auto">
+                <div class="flex items-center justify-between mb-2.5">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                        <span id="detailStatusBadge" class="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800">
+                            Available
+                        </span>
+                        <span id="detailFeeBadge" class="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                            Free Parking
+                        </span>
+                        <span id="detailTrustBadge" class="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 flex items-center gap-1">
+                            <i data-lucide="shield-check" class="w-3 h-3 text-emerald-600"></i>
+                            <span id="detailTrustScore">88% Verified</span>
+                        </span>
+                    </div>
+                    <button type="button" onclick="closeSpotDetail()" class="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors">
+                        <i data-lucide="x" class="w-4 h-4"></i>
+                    </button>
+                </div>
+
+                <div class="flex items-start justify-between gap-2">
+                    <div>
+                        <h2 id="detailTitle" class="text-base font-extrabold text-slate-900 leading-snug">Gar-Ali Central Commercial Stretch</h2>
+                        <p class="text-xs text-slate-500 font-medium mt-0.5 flex items-center gap-1">
+                            <span id="detailArea" class="text-slate-700 font-semibold">Gar-Ali</span>
+                            <span>•</span>
+                            <span id="detailDistance" class="text-emerald-700 font-semibold">0.3 km away</span>
+                        </p>
+                    </div>
+                </div>
+
+                <div class="mt-2.5 bg-amber-50/70 border border-amber-200/70 rounded-xl px-3 py-2 flex items-start gap-2">
+                    <i data-lucide="info" class="w-4 h-4 text-amber-600 shrink-0 mt-0.5"></i>
+                    <p id="detailLandmark" class="text-[11px] text-slate-700 leading-relaxed">Near Bata Point & Eleye Cinema; roadside parking bay.</p>
+                </div>
+
+                <div class="mt-3 bg-slate-50 border border-slate-200/90 rounded-2xl p-3 flex items-center justify-between">
+                    <div>
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Free Parking Spaces</span>
+                        <div class="flex items-baseline gap-1 mt-0.5">
+                            <span id="detailAvailable" class="text-2xl font-extrabold text-emerald-600">9</span>
+                            <span class="text-xs font-semibold text-slate-500">/ <span id="detailTotal">20</span> total</span>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <span id="detailVehicles" class="inline-block px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[11px] font-bold text-slate-700">2W & 4W</span>
+                        <span class="text-[10px] text-emerald-600 font-semibold flex items-center justify-end gap-1 mt-1">
+                            <i data-lucide="clock" class="w-3 h-3"></i>
+                            <span id="detailUpdated">Updated Just now</span>
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Crowd Update & Verification Actions -->
+                <div class="mt-3 space-y-2">
+                    <div class="grid grid-cols-3 gap-1.5">
+                        <button
+                            type="button"
+                            id="parkHereBtn"
+                            onclick="adjustSpotCount(-1)"
+                            class="flex items-center justify-center gap-1 py-2.5 px-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-extrabold text-[11px] transition-all active:scale-95"
+                        >
+                            <i data-lucide="car" class="w-3.5 h-3.5 text-amber-600 shrink-0"></i>
+                            <span>Park (-1)</span>
+                        </button>
+
+                        <button
+                            type="button"
+                            id="vacateSpotBtn"
+                            onclick="adjustSpotCount(1)"
+                            class="flex items-center justify-center gap-1 py-2.5 px-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-extrabold text-[11px] transition-all active:scale-95"
+                        >
+                            <i data-lucide="log-out" class="w-3.5 h-3.5 text-emerald-600 shrink-0"></i>
+                            <span>Vacate (+1)</span>
+                        </button>
+
+                        <button
+                            type="button"
+                            id="verifySpotBtn"
+                            onclick="verifySpotCount()"
+                            class="flex items-center justify-center gap-1 py-2.5 px-2 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-900 border border-blue-300 font-extrabold text-[11px] transition-all active:scale-95"
+                        >
+                            <i data-lucide="badge-check" class="w-3.5 h-3.5 text-blue-600 shrink-0"></i>
+                            <span>Verify (+2%)</span>
+                        </button>
+                    </div>
+
+                    <a
+                        id="navigateBtn"
+                        href="#"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-2.5 px-3 rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all active:scale-95"
+                    >
+                        <i data-lucide="navigation" class="w-4 h-4 text-emerald-400"></i>
+                        <span>Navigate in Google Maps</span>
+                    </a>
+                </div>
+            </div>
+
+            <!-- 4. 'INSERT NEW PARKING SPOT' MODAL -->
+            <div id="insertModal" class="absolute inset-0 bg-slate-900/65 backdrop-blur-sm z-50 hidden items-center justify-center p-3.5">
+                <div class="bg-white rounded-3xl w-full p-4 sm:p-5 shadow-2xl border border-slate-200 max-h-[92%] overflow-y-auto">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <div class="bg-emerald-100 text-emerald-700 p-2 rounded-xl">
+                                <i data-lucide="map-pin-plus" class="w-5 h-5"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-extrabold text-sm text-slate-900">Insert New Parking Spot</h3>
+                                <p class="text-[11px] text-slate-500">Add a live spot to Jorhat map &amp; database</p>
+                            </div>
+                        </div>
+                        <button type="button" onclick="closeInsertModal()" class="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+
+                    <form id="insertSpotForm" onsubmit="submitInsertSpot(event)" class="space-y-3">
+                        <!-- Spot Name -->
+                        <div>
+                            <label for="insertSpotName" class="block text-[11px] font-bold text-slate-700 mb-1">Spot Name *</label>
+                            <input
+                                type="text"
+                                id="insertSpotName"
+                                required
+                                placeholder="e.g., Gar-Ali Market Lane"
+                                class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:border-emerald-500 outline-none"
+                            />
+                        </div>
+
+                        <!-- Zone Selection + Custom Option -->
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            <div>
+                                <label for="insertSpotZoneSelect" class="block text-[11px] font-bold text-slate-700 mb-1">Zone *</label>
+                                <select
+                                    id="insertSpotZoneSelect"
+                                    onchange="handleZoneSelectChange()"
+                                    class="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:border-emerald-500 outline-none"
+                                >
+                                    <option value="Gar-Ali">Gar-Ali</option>
+                                    <option value="A.T. Road">A.T. Road</option>
+                                    <option value="K.B. Road">K.B. Road</option>
+                                    <option value="Chowk Bazar">Chowk Bazar</option>
+                                    <option value="Court Field">Court Field</option>
+                                    <option value="JMCH / Kenduguri">JMCH / Kenduguri</option>
+                                    <option value="Tarajan">Tarajan</option>
+                                    <option value="JEC Road">JEC Road</option>
+                                    <option value="Na-Ali">Na-Ali</option>
+                                    <option value="Baruah Chariali">Baruah Chariali</option>
+                                    <option value="custom">Other / Custom Zone...</option>
+                                </select>
+                            </div>
+                            <div id="customZoneWrapper" class="hidden">
+                                <label for="insertSpotCustomZone" class="block text-[11px] font-bold text-slate-700 mb-1">Custom Zone Name *</label>
+                                <input
+                                    type="text"
+                                    id="insertSpotCustomZone"
+                                    placeholder="Enter Jorhat area"
+                                    class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:border-emerald-500 outline-none"
+                                />
+                            </div>
+                            <div id="landmarkHintBox" class="bg-slate-50 border border-slate-200/80 rounded-xl px-2.5 py-2 flex flex-col justify-center">
+                                <span class="text-[10px] font-bold text-slate-500">Tip</span>
+                                <span class="text-[10px] text-slate-600 leading-tight mt-0.5">Tap anywhere on the map to pick exact coordinates.</span>
+                            </div>
+                        </div>
+
+                        <!-- Latitude & Longitude + 'Use Map Center' -->
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <span class="text-[11px] font-bold text-slate-700">Coordinates (Lat, Lng)</span>
+                                <button
+                                    type="button"
+                                    onclick="fillCoordsFromMapCenter()"
+                                    class="text-[10px] font-extrabold text-emerald-700 hover:underline flex items-center gap-1"
+                                >
+                                    <i data-lucide="crosshair" class="w-3 h-3"></i>
+                                    <span>Use Map Center</span>
+                                </button>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label for="insertSpotLat" class="sr-only">Latitude</label>
+                                    <input
+                                        type="number"
+                                        step="any"
+                                        id="insertSpotLat"
+                                        required
+                                        placeholder="26.7509"
+                                        class="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:bg-white focus:border-emerald-500 outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label for="insertSpotLng" class="sr-only">Longitude</label>
+                                    <input
+                                        type="number"
+                                        step="any"
+                                        id="insertSpotLng"
+                                        required
+                                        placeholder="94.2037"
+                                        class="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:bg-white focus:border-emerald-500 outline-none"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Free Spots & Total Spots -->
+                        <div class="grid grid-cols-2 gap-2.5">
+                            <div>
+                                <label for="insertFreeSpots" class="block text-[11px] font-bold text-slate-700 mb-1">Free Spots *</label>
+                                <input
+                                    type="number"
+                                    id="insertFreeSpots"
+                                    min="0"
+                                    max="500"
+                                    value="5"
+                                    required
+                                    class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:border-emerald-500 outline-none"
+                                />
+                            </div>
+                            <div>
+                                <label for="insertTotalSpots" class="block text-[11px] font-bold text-slate-700 mb-1">Total Spots *</label>
+                                <input
+                                    type="number"
+                                    id="insertTotalSpots"
+                                    min="1"
+                                    max="500"
+                                    value="12"
+                                    required
+                                    class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium focus:bg-white focus:border-emerald-500 outline-none"
+                                />
+                            </div>
+                        </div>
+
+                        <!-- Vehicle Types Pills/Checkboxes -->
+                        <div>
+                            <span class="block text-[11px] font-bold text-slate-700 mb-1">Vehicle Types</span>
+                            <div class="grid grid-cols-2 gap-2">
+                                <label class="flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer text-xs font-bold text-slate-700">
+                                    <input type="checkbox" id="veh2W" value="2w" checked class="rounded text-emerald-600 focus:ring-emerald-500" />
+                                    <span>2-Wheeler</span>
+                                </label>
+                                <label class="flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer text-xs font-bold text-slate-700">
+                                    <input type="checkbox" id="veh4W" value="4w" checked class="rounded text-emerald-600 focus:ring-emerald-500" />
+                                    <span>4-Wheeler</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Cost Toggle ('Free Parking' vs 'Paid Lot') -->
+                        <div>
+                            <span class="block text-[11px] font-bold text-slate-700 mb-1">Parking Cost</span>
+                            <div class="grid grid-cols-2 gap-2">
+                                <button
+                                    type="button"
+                                    id="costFreeBtn"
+                                    onclick="setInsertCostMode('free')"
+                                    class="py-2 px-3 rounded-xl text-xs font-extrabold border transition-all bg-emerald-50 text-emerald-800 border-emerald-400"
+                                >
+                                    Free Parking
+                                </button>
+                                <button
+                                    type="button"
+                                    id="costPaidBtn"
+                                    onclick="setInsertCostMode('paid')"
+                                    class="py-2 px-3 rounded-xl text-xs font-extrabold border transition-all bg-slate-50 text-slate-600 border-slate-200"
+                                >
+                                    Paid Lot
+                                </button>
+                            </div>
+                            <input type="hidden" id="insertIsPaid" value="false" />
+                        </div>
+
+                        <!-- Form Action Buttons -->
+                        <div class="pt-1 flex items-center gap-2">
+                            <button
+                                type="button"
+                                onclick="closeInsertModal()"
+                                class="flex-1 py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                id="insertSubmitBtn"
+                                class="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md flex items-center justify-center gap-1.5"
+                            >
+                                <i data-lucide="check-circle-2" class="w-4 h-4"></i>
+                                <span>Insert Spot</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- 5. SUPABASE KEY & REALTIME SYNC MODAL -->
+            <div id="supabaseModal" class="absolute inset-0 bg-slate-900/65 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
+                <div class="bg-white rounded-3xl w-full p-5 shadow-2xl border border-slate-200 max-h-[90%] overflow-y-auto">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <div class="bg-emerald-100 text-emerald-700 p-2 rounded-xl">
+                                <i data-lucide="database" class="w-5 h-5"></i>
+                            </div>
+                            <div>
+                                <h3 class="font-extrabold text-sm text-slate-900">Supabase Realtime Sync</h3>
+                                <p class="text-[11px] text-slate-500">Table: <code class="text-[10px]">public.parking_spots</code></p>
+                            </div>
+                        </div>
+                        <button type="button" onclick="closeSupabaseModal()" class="p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600">
+                            <i data-lucide="x" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+
+                    <div class="bg-slate-50 border border-slate-200 rounded-xl p-2.5 mb-3 text-[11px] text-slate-600 space-y-1">
+                        <div><span class="font-bold text-slate-800">Project URL:</span> <span class="font-mono text-[10px] break-all">https://qvnzxljlylccvuslzncj.supabase.co</span></div>
+                        <div><span class="font-bold text-slate-800">Realtime:</span> <span class="text-slate-700">INSERT, UPDATE &amp; DELETE on <code>parking_spots</code></span></div>
+                    </div>
+
+                    <form onsubmit="saveSupabaseKey(event)" class="space-y-3">
+                        <div>
+                            <label for="supabaseKeyInput" class="block text-[11px] font-bold text-slate-700 mb-1">Publishable or Anon Key</label>
+                            <input
+                                type="password"
+                                id="supabaseKeyInput"
+                                placeholder="sb_publishable_... or eyJhbGciOi..."
+                                class="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:bg-white focus:border-emerald-500 outline-none"
+                            />
+                            <p class="text-[10px] text-slate-400 mt-1">Stored locally in your browser. Leave blank to stay in <strong>Local Demo Mode</strong>.</p>
+                        </div>
+
+                        <div class="flex items-center gap-2 pt-1">
+                            <button
+                                type="button"
+                                onclick="clearSupabaseKey()"
+                                class="py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs"
+                            >
+                                Local Demo
+                            </button>
+                            <button
+                                type="submit"
+                                class="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs shadow-md"
+                            >
+                                Connect &amp; Sync
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // =====================================================================
+        // 1. CONFIGURATION & INITIAL JORHAT PARKING SEED DATA
+        // =====================================================================
+        const JORHAT_CENTER = [26.7509, 94.2037];
+        const SUPABASE_URL = 'https://qvnzxljlylccvuslzncj.supabase.co';
+        const SUPABASE_KEY_STORAGE = 'jorhat_parklive_supabase_key';
+
+        const DEFAULT_JORHAT_SPOTS = [
+            {
+                id: 'gar-ali-1',
+                name: 'Gar-Ali Central Commercial Stretch',
+                area: 'Gar-Ali',
+                landmark: 'Near Bata Point & Eleye Cinema; roadside bay parking in central Gar-Ali.',
+                lat: 26.7524,
+                lng: 94.2051,
+                available: 9,
+                total: 20,
+                isFree: true,
+                vehicles: '2W & 4W',
+                rawVehicleTypes: ['2w', '4w'],
+                trustScore: 88,
+                lastUpdated: 'Just now'
+            },
+            {
+                id: 'at-road-1',
+                name: 'A.T. Road Baruah Chariali Bay',
+                area: 'A.T. Road',
+                landmark: 'Paved roadside bay near Baruah Chariali along A.T. Road (NH-37).',
+                lat: 26.7568,
+                lng: 94.2195,
+                available: 4,
+                total: 18,
+                isFree: true,
+                vehicles: '2W & 4W',
+                rawVehicleTypes: ['2w', '4w'],
+                trustScore: 84,
+                lastUpdated: '2 mins ago'
+            },
+            {
+                id: 'kb-road-1',
+                name: 'K.B. Road Market Pocket',
+                area: 'K.B. Road',
+                landmark: 'Commercial pocket on K.B. Road; busy during daytime shopping hours.',
+                lat: 26.7489,
+                lng: 94.2098,
+                available: 0,
+                total: 14,
+                isFree: false,
+                feeNote: 'Paid Lot',
+                vehicles: '2W',
+                rawVehicleTypes: ['2w'],
+                trustScore: 91,
+                lastUpdated: '1 min ago'
+            },
+            {
+                id: 'chowk-bazar-1',
+                name: 'Chowk Bazar Outer Lane',
+                area: 'Chowk Bazar',
+                landmark: 'Outer lane access near Chowk Bazar market area.',
+                lat: 26.7541,
+                lng: 94.2016,
+                available: 6,
+                total: 15,
+                isFree: true,
+                vehicles: '2W & 4W',
+                rawVehicleTypes: ['2w', '4w'],
+                trustScore: 79,
+                lastUpdated: '4 mins ago'
+            },
+            {
+                id: 'court-field-1',
+                name: 'Court Field & Rajmao Pukhuri Road',
+                area: 'Court Field',
+                landmark: 'Perimeter parking stretch along Court Field & Rajmao Pukhuri.',
+                lat: 26.7462,
+                lng: 94.2154,
+                available: 16,
+                total: 30,
+                isFree: true,
+                vehicles: '2W & 4W',
+                rawVehicleTypes: ['2w', '4w'],
+                trustScore: 93,
+                lastUpdated: 'Just now'
+            },
+            {
+                id: 'jmch-1',
+                name: 'JMCH Visitor & Kenduguri Parking',
+                area: 'JMCH / Kenduguri',
+                landmark: 'Visitor parking zone near Jorhat Medical College & Kenduguri.',
+                lat: 26.7275,
+                lng: 94.1958,
+                available: 5,
+                total: 25,
+                isFree: false,
+                feeNote: 'Paid Lot',
+                vehicles: '2W & 4W',
+                rawVehicleTypes: ['2w', '4w'],
+                trustScore: 86,
+                lastUpdated: '3 mins ago'
+            },
+            {
+                id: 'tarajan-1',
+                name: 'Tarajan Commercial Strip',
+                area: 'Tarajan',
+                landmark: 'Roadside parking stretch along Tarajan commercial area.',
+                lat: 26.7625,
+                lng: 94.2260,
+                available: 11,
+                total: 16,
+                isFree: true,
+                vehicles: '2W',
+                rawVehicleTypes: ['2w'],
+                trustScore: 82,
+                lastUpdated: '5 mins ago'
+            },
+            {
+                id: 'jec-road-1',
+                name: 'JEC Road & Garmur Approach',
+                area: 'JEC Road',
+                landmark: 'Wide approach stretch near Jorhat Engineering College & Garmur.',
+                lat: 26.7365,
+                lng: 94.1845,
+                available: 14,
+                total: 22,
+                isFree: true,
+                vehicles: '2W & 4W',
+                rawVehicleTypes: ['2w', '4w'],
+                trustScore: 90,
+                lastUpdated: '6 mins ago'
+            }
+        ];
+
+        // Application State
+        let parkingSpots = JSON.parse(JSON.stringify(DEFAULT_JORHAT_SPOTS));
+        let referenceCoords = [...JORHAT_CENTER];
+        let map = null;
+        let markersLayer = null;
+        let vectorGridLayer = null;
+        let showVectorGrid = true;
+        let userMarker = null;
+        let pickedPinMarker = null;
+        let pickedPinCoords = null;
+        let selectedSpotId = null;
+        let activeFilter = 'all';
+        let searchQuery = '';
+        let isListExpanded = false;
+        let liveSimInterval = null;
+
+        // Unwatermarked Tile Providers (No API-key or watermarked tiles)
+        const TILE_PROVIDERS = [
+            {
+                name: 'Esri World Street',
+                url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+                options: {
+                    attribution: '&copy; Esri, USGS, OpenStreetMap',
+                    crossOrigin: 'anonymous',
+                    referrerPolicy: 'strict-origin-when-cross-origin',
+                    maxZoom: 19
+                }
+            },
+            {
+                name: 'OpenStreetMap',
+                url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                options: {
+                    attribution: '&copy; OpenStreetMap contributors',
+                    crossOrigin: 'anonymous',
+                    referrerPolicy: 'strict-origin-when-cross-origin',
+                    maxZoom: 19
+                }
+            }
+        ];
+        let activeTileIndex = 0;
+        let currentTileLayer = null;
+        let tileErrorCount = 0;
+
+        // Supabase State
+        let supabaseClient = null;
+        let supabaseChannel = null;
+        let isLiveDbConnected = false;
+
+        // =====================================================================
+        // 2. INITIALIZATION & UI EVENT WIRING
+        // =====================================================================
+        window.onload = function () {
+            lucide.createIcons();
+            initMap();
+            renderAll();
+            initSupabaseFromStorage();
+
+            const searchInput = document.getElementById('searchInput');
+            const clearBtn = document.getElementById('clearSearchBtn');
+            searchInput.addEventListener('input', (e) => {
+                searchQuery = e.target.value.toLowerCase().trim();
+                clearBtn.classList.toggle('hidden', !searchQuery);
+                renderAll();
+            });
+        };
+
+        function formatRelativeTime(isoOrText) {
+            if (!isoOrText) return 'Just now';
+            const parsed = Date.parse(isoOrText);
+            if (Number.isNaN(parsed)) return String(isoOrText);
+            const diffSec = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
+            if (diffSec < 45) return 'Just now';
+            const mins = Math.floor(diffSec / 60);
+            if (mins < 60) return `${mins} min${mins === 1 ? '' : 's'} ago`;
+            const hrs = Math.floor(mins / 60);
+            return `${hrs} hr${hrs === 1 ? '' : 's'} ago`;
+        }
+
+        function mapSupabaseRowToSpot(row) {
+            const types = Array.isArray(row.vehicle_types) ? row.vehicle_types : ['2w'];
+            const has2W = types.some(t => String(t).toLowerCase().includes('2'));
+            const has4W = types.some(t => String(t).toLowerCase().includes('4'));
+            const vehiclesLabel = has2W && has4W ? '2W & 4W' : (has4W ? '4W' : '2W');
+            const isFree = !Boolean(row.is_paid);
+            const zone = row.zone || 'Jorhat';
+
+            return {
+                id: String(row.id),
+                name: row.name || 'Unnamed Spot',
+                area: zone,
+                landmark: `${zone} area • ${isFree ? 'Free parking bay' : 'Paid parking lot'}.`,
+                lat: Number(row.lat),
+                lng: Number(row.lng),
+                available: Number(row.free_spots ?? 0),
+                total: Math.max(1, Number(row.total_spots ?? 1)),
+                isFree,
+                feeNote: isFree ? undefined : 'Paid Lot',
+                vehicles: vehiclesLabel,
+                rawVehicleTypes: types,
+                trustScore: Number(row.trust_score ?? 80),
+                lastUpdated: formatRelativeTime(row.updated_at)
+            };
+        }
+
+        // =====================================================================
+        // 3. SUPABASE CLIENT, INITIAL LOAD & REALTIME SUBSCRIPTION
+        // =====================================================================
+        function updateConnectionBadge(mode, label) {
+            const textEl = document.getElementById('dbStatusText');
+            const dotCore = document.getElementById('statusDotCore');
+            const pingAnim = document.getElementById('statusPingAnim');
+
+            textEl.textContent = label;
+            if (mode === 'live') {
+                textEl.parentElement.className = 'text-[10px] sm:text-[11px] font-bold text-emerald-700 hover:underline flex items-center gap-1';
+                dotCore.className = 'relative inline-flex rounded-full h-2 w-2 bg-emerald-500';
+                pingAnim.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75';
+            } else {
+                textEl.parentElement.className = 'text-[10px] sm:text-[11px] font-bold text-amber-700 hover:underline flex items-center gap-1';
+                dotCore.className = 'relative inline-flex rounded-full h-2 w-2 bg-amber-500';
+                pingAnim.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75';
+            }
+        }
+
+        function initSupabaseFromStorage() {
+            const savedKey = localStorage.getItem(SUPABASE_KEY_STORAGE)?.trim();
+            if (!savedKey) {
+                isLiveDbConnected = false;
+                updateConnectionBadge('demo', 'Local Demo Mode');
+                return;
+            }
+            connectSupabaseWithKey(savedKey, true);
+        }
+
+        async function connectSupabaseWithKey(apiKey, silent = false) {
+            try {
+                if (!window.supabase || !window.supabase.createClient) {
+                    throw new Error('Supabase client library unavailable');
+                }
+
+                if (supabaseChannel && supabaseClient) {
+                    try { await supabaseClient.removeChannel(supabaseChannel); } catch (_) {}
+                    supabaseChannel = null;
+                }
+
+                supabaseClient = window.supabase.createClient(SUPABASE_URL, apiKey);
+
+                const { data, error } = await supabaseClient
+                    .from('parking_spots')
+                    .select('id, name, zone, lat, lng, free_spots, total_spots, vehicle_types, is_paid, trust_score, updated_at');
+
+                if (error) throw error;
+
+                if (Array.isArray(data) && data.length > 0) {
+                    parkingSpots = data.map(mapSupabaseRowToSpot);
+                }
+
+                isLiveDbConnected = true;
+                updateConnectionBadge('live', 'Live DB Synced');
+                renderAll();
+                if (!silent) showToast('Connected to Supabase Live DB!');
+
+                supabaseChannel = supabaseClient
+                    .channel('jorhat-parking-spots-realtime')
+                    .on(
+                        'postgres_changes',
+                        { event: '*', schema: 'public', table: 'parking_spots' },
+                        (payload) => {
+                            if (payload.eventType === 'INSERT' && payload.new) {
+                                const mapped = mapSupabaseRowToSpot(payload.new);
+                                const idx = parkingSpots.findIndex(s => s.id === mapped.id);
+                                if (idx >= 0) parkingSpots[idx] = mapped;
+                                else parkingSpots.unshift(mapped);
+                                renderAll();
+                            } else if (payload.eventType === 'UPDATE' && payload.new) {
+                                const mapped = mapSupabaseRowToSpot(payload.new);
+                                const idx = parkingSpots.findIndex(s => s.id === mapped.id);
+                                if (idx >= 0) parkingSpots[idx] = mapped;
+                                else parkingSpots.push(mapped);
+                                renderAll();
+                            } else if (payload.eventType === 'DELETE' && payload.old) {
+                                parkingSpots = parkingSpots.filter(s => s.id !== String(payload.old.id));
+                                if (selectedSpotId === String(payload.old.id)) closeSpotDetail();
+                                renderAll();
+                            }
+                        }
+                    )
+                    .subscribe((status) => {
+                        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+                            updateConnectionBadge('demo', 'Local Demo Mode');
+                            if (!silent) showToast('Realtime channel busy — local updates remain active.');
+                        } else if (status === 'SUBSCRIBED' && isLiveDbConnected) {
+                            updateConnectionBadge('live', 'Live DB Synced');
+                        }
+                    });
+            } catch (err) {
+                console.warn('Supabase connection fallback:', err);
+                isLiveDbConnected = false;
+                updateConnectionBadge('demo', 'Local Demo Mode');
+                if (!silent) {
+                    showToast('Could not connect to Supabase — staying in Local Demo Mode.');
+                }
+            }
+        }
+
+        function openSupabaseModal() {
+            document.getElementById('supabaseKeyInput').value = localStorage.getItem(SUPABASE_KEY_STORAGE) || '';
+            const modal = document.getElementById('supabaseModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            lucide.createIcons();
+        }
+
+        function closeSupabaseModal() {
+            const modal = document.getElementById('supabaseModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function saveSupabaseKey(e) {
+            e.preventDefault();
+            const keyVal = document.getElementById('supabaseKeyInput').value.trim();
+            closeSupabaseModal();
+            if (!keyVal) {
+                clearSupabaseKey();
+                return;
+            }
+            localStorage.setItem(SUPABASE_KEY_STORAGE, keyVal);
+            connectSupabaseWithKey(keyVal, false);
+        }
+
+        async function clearSupabaseKey() {
+            localStorage.removeItem(SUPABASE_KEY_STORAGE);
+            if (supabaseChannel && supabaseClient) {
+                try { await supabaseClient.removeChannel(supabaseChannel); } catch (_) {}
+                supabaseChannel = null;
+            }
+            supabaseClient = null;
+            isLiveDbConnected = false;
+            parkingSpots = JSON.parse(JSON.stringify(DEFAULT_JORHAT_SPOTS));
+            updateConnectionBadge('demo', 'Local Demo Mode');
+            closeSupabaseModal();
+            renderAll();
+            showToast('Switched to Local Demo Mode');
+        }
+
+        // =====================================================================
+        // 4. LEAFLET MAP, UNWATERMARKED TILES & JORHAT LANDMARK OVERLAY
+        // =====================================================================
+        function initMap() {
+            map = L.map('map', {
+                center: JORHAT_CENTER,
+                zoom: 14,
+                zoomControl: false
+            });
+
+            loadTileProvider(0);
+            buildJorhatVectorOverlay();
+
+            markersLayer = L.layerGroup().addTo(map);
+
+            setTimeout(() => {
+                map.invalidateSize();
+            }, 150);
+
+            // Clicking the map sets/moves the picked pin and updates coordinates if Insert Modal is open
+            map.on('click', function (e) {
+                placePickedPin([e.latlng.lat, e.latlng.lng]);
+                const latEl = document.getElementById('insertSpotLat');
+                const lngEl = document.getElementById('insertSpotLng');
+                if (latEl && lngEl) {
+                    latEl.value = e.latlng.lat.toFixed(6);
+                    lngEl.value = e.latlng.lng.toFixed(6);
+                }
+                showToast(`Pinned ${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)} — tap + Insert Spot`);
+            });
+        }
+
+        function loadTileProvider(index) {
+            if (index >= TILE_PROVIDERS.length) {
+                document.getElementById('tileSourceBadge').textContent = 'Map: Jorhat Vector Grid';
+                return;
+            }
+
+            activeTileIndex = index;
+            tileErrorCount = 0;
+            const provider = TILE_PROVIDERS[index];
+
+            if (currentTileLayer) {
+                map.removeLayer(currentTileLayer);
+            }
+
+            document.getElementById('tileSourceBadge').textContent = `Map: ${provider.name}`;
+
+            currentTileLayer = L.tileLayer(provider.url, provider.options);
+
+            currentTileLayer.on('tileerror', function (err) {
+                if (err && err.tile) {
+                    err.tile.classList.add('leaflet-tile-error');
+                }
+                tileErrorCount += 1;
+                if (tileErrorCount >= 4 && activeTileIndex + 1 < TILE_PROVIDERS.length) {
+                    loadTileProvider(activeTileIndex + 1);
+                } else if (tileErrorCount >= 4) {
+                    document.getElementById('tileSourceBadge').textContent = 'Map: Jorhat Vector Grid';
+                }
+            });
+
+            currentTileLayer.addTo(map);
+            currentTileLayer.bringToBack();
+        }
+
+        function buildJorhatVectorOverlay() {
+            vectorGridLayer = L.layerGroup();
+
+            // Bhogdoi River
+            L.polyline([
+                [26.7720, 94.2195],
+                [26.7620, 94.2165],
+                [26.7535, 94.2168],
+                [26.7450, 94.2185],
+                [26.7340, 94.2225]
+            ], {
+                color: '#0284c7',
+                weight: 7,
+                opacity: 0.35,
+                lineCap: 'round'
+            }).addTo(vectorGridLayer);
+
+            // Rajmao Pukhuri
+            L.polygon([
+                [26.7482, 94.2096],
+                [26.7482, 94.2122],
+                [26.7460, 94.2122],
+                [26.7460, 94.2096]
+            ], {
+                color: '#0284c7',
+                weight: 1.5,
+                fillColor: '#38bdf8',
+                fillOpacity: 0.35
+            }).addTo(vectorGridLayer);
+
+            // Major Jorhat Corridors
+            const roads = [
+                {
+                    coords: [[26.7360, 94.1780], [26.7438, 94.1905], [26.7484, 94.2016], [26.7520, 94.2130], [26.7565, 94.2280]],
+                    color: '#d97706',
+                    weight: 3.5
+                },
+                {
+                    coords: [[26.7484, 94.2016], [26.7524, 94.2058], [26.7575, 94.2122]],
+                    color: '#0f766e',
+                    weight: 3
+                },
+                {
+                    coords: [[26.7505, 94.2035], [26.7551, 94.2089], [26.7605, 94.2145]],
+                    color: '#475569',
+                    weight: 2.5
+                },
+                {
+                    coords: [[26.7484, 94.2016], [26.7410, 94.2082], [26.7320, 94.2140]],
+                    color: '#475569',
+                    weight: 2.5
+                },
+                {
+                    coords: [[26.7520, 94.2130], [26.7465, 94.2310], [26.7422, 94.2475]],
+                    color: '#4f46e5',
+                    weight: 2.5
+                }
+            ];
+
+            roads.forEach(r => {
+                L.polyline(r.coords, {
+                    color: r.color,
+                    weight: r.weight,
+                    opacity: 0.45,
+                    dashArray: '5, 5'
+                }).addTo(vectorGridLayer);
+            });
+
+            const landmarks = [
+                { text: 'A.T. Road / Baruah Chariali', coords: [26.7488, 94.2005] },
+                { text: 'Gar-Ali', coords: [26.7532, 94.2045] },
+                { text: 'K.B. Road', coords: [26.7502, 94.2098] },
+                { text: 'Na-Ali', coords: [26.7402, 94.2085] },
+                { text: 'JEC Road', coords: [26.7385, 94.1870] },
+                { text: 'Rajmao Pukhuri', coords: [26.7471, 94.2109] },
+                { text: 'Bhogdoi River', coords: [26.7535, 94.2175] }
+            ];
+
+            landmarks.forEach(lm => {
+                L.marker(lm.coords, {
+                    interactive: false,
+                    icon: L.divIcon({
+                        className: 'jorhat-road-label',
+                        html: `<span>${lm.text}</span>`,
+                        iconSize: [120, 16],
+                        iconAnchor: [60, 8]
+                    })
+                }).addTo(vectorGridLayer);
+            });
+
+            vectorGridLayer.addTo(map);
+        }
+
+        function toggleVectorGrid() {
+            showVectorGrid = !showVectorGrid;
+            const btn = document.getElementById('toggleGridBtn');
+            if (showVectorGrid) {
+                vectorGridLayer.addTo(map);
+                btn.className = 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 p-2.5 rounded-2xl shadow-md border border-emerald-200 transition-all active:scale-95 flex items-center justify-center';
+                showToast('Jorhat Landmark Overlay: ON');
+            } else {
+                map.removeLayer(vectorGridLayer);
+                btn.className = 'bg-white hover:bg-slate-50 text-slate-600 p-2.5 rounded-2xl shadow-md border border-slate-200 transition-all active:scale-95 flex items-center justify-center';
+                showToast('Jorhat Landmark Overlay: OFF');
+            }
+        }
+
+        function placePickedPin(coords) {
+            pickedPinCoords = [Number(coords[0]), Number(coords[1])];
+            if (pickedPinMarker) {
+                map.removeLayer(pickedPinMarker);
+            }
+
+            const pinIcon = L.divIcon({
+                className: 'custom-picked-pin',
+                html: `
+                    <div class="relative flex items-center justify-center w-9 h-9">
+                        <div class="absolute inset-0 rounded-full bg-blue-500 pin-pulse"></div>
+                        <div class="relative z-10 w-8 h-8 rounded-full bg-blue-600 border-2 border-white shadow-lg flex items-center justify-center text-white font-extrabold text-sm">
+                            +
+                        </div>
+                    </div>
+                `,
+                iconSize: [36, 36],
+                iconAnchor: [18, 18]
+            });
+
+            pickedPinMarker = L.marker(pickedPinCoords, { icon: pinIcon, draggable: true }).addTo(map);
+            pickedPinMarker.on('dragend', function (ev) {
+                const pos = ev.target.getLatLng();
+                pickedPinCoords = [pos.lat, pos.lng];
+                const latEl = document.getElementById('insertSpotLat');
+                const lngEl = document.getElementById('insertSpotLng');
+                if (latEl && lngEl) {
+                    latEl.value = pos.lat.toFixed(6);
+                    lngEl.value = pos.lng.toFixed(6);
+                }
+            });
+        }
+
+        function recenterJorhat() {
+            map.flyTo(JORHAT_CENTER, 14, { duration: 0.7 });
+            showToast('Centered on Jorhat');
+        }
+
+        function locateUser() {
+            if (!navigator.geolocation) {
+                showToast('GPS not available — centered on Jorhat');
+                recenterJorhat();
+                return;
+            }
+            showToast('Locating your position in Jorhat...');
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const coords = [pos.coords.latitude, pos.coords.longitude];
+                    referenceCoords = coords;
+                    map.flyTo(coords, 15, { duration: 0.8 });
+
+                    if (userMarker) map.removeLayer(userMarker);
+                    const userIcon = L.divIcon({
+                        className: 'user-loc-pin',
+                        html: `
+                            <div class="relative flex items-center justify-center w-7 h-7">
+                                <div class="absolute inset-0 rounded-full bg-blue-500 pin-pulse"></div>
+                                <div class="relative z-10 w-4 h-4 rounded-full bg-blue-600 border-2 border-white shadow-md"></div>
+                            </div>
+                        `,
+                        iconSize: [28, 28],
+                        iconAnchor: [14, 14]
+                    });
+                    userMarker = L.marker(coords, { icon: userIcon }).addTo(map).bindPopup('Your Location').openPopup();
+                    renderAll();
+                },
+                () => {
+                    showToast('Using Jorhat center as reference');
+                    recenterJorhat();
+                },
+                { timeout: 5000 }
+            );
+        }
+
+        // =====================================================================
+        // 5. FILTERING, SORTING & RENDERING
+        // =====================================================================
+        function calculateDistanceKm(lat1, lon1, lat2, lon2) {
+            const R = 6371;
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return (R * c).toFixed(1);
+        }
+
+        function getSpotStatus(spot) {
+            if (spot.available <= 0) {
+                return {
+                    label: 'Full',
+                    colorHex: '#f43f5e',
+                    badgeClass: 'bg-rose-100 text-rose-800',
+                    textClass: 'text-rose-600',
+                    pulse: false
+                };
+            }
+            if (spot.available <= 2) {
+                return {
+                    label: 'Limited',
+                    colorHex: '#f59e0b',
+                    badgeClass: 'bg-amber-100 text-amber-800',
+                    textClass: 'text-amber-600',
+                    pulse: false
+                };
+            }
+            return {
+                label: 'Available',
+                colorHex: '#10b981',
+                badgeClass: 'bg-emerald-100 text-emerald-800',
+                textClass: 'text-emerald-600',
+                pulse: true
+            };
+        }
+
+        function setFilter(filterKey) {
+            activeFilter = filterKey;
+            document.querySelectorAll('.filter-chip').forEach(btn => {
+                const isActive = btn.dataset.filter === filterKey;
+                btn.className = isActive
+                    ? 'filter-chip active px-3 py-1.5 rounded-full text-[11px] font-bold bg-slate-900 text-white shadow-sm transition-all whitespace-nowrap flex items-center gap-1'
+                    : 'filter-chip px-3 py-1.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 hover:bg-slate-200 transition-all whitespace-nowrap flex items-center gap-1';
+            });
+
+            if (filterKey === 'near') {
+                locateUser();
+            }
+            renderAll();
+        }
+
+        function clearSearch() {
+            const input = document.getElementById('searchInput');
+            input.value = '';
+            searchQuery = '';
+            document.getElementById('clearSearchBtn').classList.add('hidden');
+            renderAll();
+        }
+
+        function getFilteredAndSortedSpots() {
+            return parkingSpots
+                .filter(spot => {
+                    const matchesSearch = !searchQuery ||
+                        spot.name.toLowerCase().includes(searchQuery) ||
+                        spot.area.toLowerCase().includes(searchQuery) ||
+                        spot.landmark.toLowerCase().includes(searchQuery);
+                    if (!matchesSearch) return false;
+
+                    if (activeFilter === 'free') return spot.isFree;
+                    if (activeFilter === '2W') return spot.vehicles.includes('2W');
+                    if (activeFilter === '4W') return spot.vehicles.includes('4W');
+                    if (activeFilter === 'near') {
+                        const d = parseFloat(calculateDistanceKm(referenceCoords[0], referenceCoords[1], spot.lat, spot.lng));
+                        return d <= 3.0;
+                    }
+                    return true;
+                })
+                .map(spot => ({
+                    ...spot,
+                    distanceKm: parseFloat(calculateDistanceKm(referenceCoords[0], referenceCoords[1], spot.lat, spot.lng))
+                }))
+                .sort((a, b) => {
+                    if ((a.available > 0) !== (b.available > 0)) {
+                        return a.available > 0 ? -1 : 1;
+                    }
+                    return a.distanceKm - b.distanceKm;
+                });
+        }
+
+        function renderAll() {
+            const spots = getFilteredAndSortedSpots();
+            renderMapMarkers(spots);
+            renderSpotList(spots);
+            updateHeaderStats(spots);
+
+            if (selectedSpotId) {
+                const current = spots.find(s => s.id === selectedSpotId) || parkingSpots.find(s => s.id === selectedSpotId);
+                if (current) populateDetailSheet(current);
+            }
+            lucide.createIcons();
+        }
+
+        function renderMapMarkers(spots) {
+            markersLayer.clearLayers();
+
+            spots.forEach(spot => {
+                const status = getSpotStatus(spot);
+                const pulseHtml = status.pulse
+                    ? `<div class="absolute inset-0 rounded-full pin-pulse" style="background-color: ${status.colorHex};"></div>`
+                    : '';
+
+                const divIcon = L.divIcon({
+                    className: 'custom-spot-marker',
+                    html: `
+                        <div class="relative flex items-center justify-center w-10 h-10 cursor-pointer group">
+                            ${pulseHtml}
+                            <div class="relative z-10 w-8 h-8 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-white font-extrabold text-xs transition-transform group-hover:scale-110" style="background-color: ${status.colorHex};">
+                                ${spot.available}
+                            </div>
+                        </div>
+                    `,
+                    iconSize: [40, 40],
+                    iconAnchor: [20, 20]
+                });
+
+                const marker = L.marker([spot.lat, spot.lng], { icon: divIcon });
+                marker.on('click', (e) => {
+                    L.DomEvent.stopPropagation(e);
+                    openSpotDetail(spot.id);
+                });
+                marker.addTo(markersLayer);
+            });
+        }
+
+        function renderSpotList(spots) {
+            const container = document.getElementById('spotListContainer');
+            document.getElementById('zoneCountBadge').textContent = spots.length;
+
+            if (spots.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-8 px-4">
+                        <p class="text-xs font-bold text-slate-700">No Jorhat parking spots match this filter</p>
+                        <p class="text-[11px] text-slate-500 mt-1">Clear your search or switch to 'All'.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = spots.map(spot => {
+                const status = getSpotStatus(spot);
+                const isSelected = spot.id === selectedSpotId;
+                return `
+                    <div
+                        onclick="openSpotDetail('${spot.id}')"
+                        class="p-3 rounded-2xl border transition-all cursor-pointer ${isSelected ? 'bg-emerald-50/70 border-emerald-500 shadow-sm' : 'bg-white hover:bg-slate-50 border-slate-200'}"
+                    >
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-1.5 flex-wrap">
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold ${status.badgeClass}">${status.label}</span>
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${spot.isFree ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-600'}">
+                                        ${spot.isFree ? 'Free' : (spot.feeNote || 'Paid')}
+                                    </span>
+                                    <span class="text-[10px] font-semibold text-slate-400">${spot.distanceKm} km</span>
+                                </div>
+                                <h4 class="font-bold text-xs text-slate-900 mt-1.5 truncate">${spot.name}</h4>
+                                <p class="text-[11px] text-slate-500 truncate mt-0.5">${spot.area} • ${spot.landmark}</p>
+                            </div>
+                            <div class="text-right shrink-0">
+                                <span class="text-lg font-extrabold ${status.textClass} leading-none">${spot.available}</span>
+                                <span class="block text-[10px] font-semibold text-slate-400 mt-0.5">/${spot.total} free</span>
+                            </div>
+                        </div>
+                        <div class="mt-2 pt-1.5 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400">
+                            <span>${spot.vehicles} • Updated ${spot.lastUpdated}</span>
+                            <span class="font-bold text-emerald-600">Details →</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateHeaderStats(spots) {
+            const totalFree = spots.reduce((acc, s) => acc + s.available, 0);
+            document.getElementById('totalFreeCount').textContent = totalFree;
+        }
+
+        // =====================================================================
+        // 6. DRAWER, SPOT DETAIL & CROWD ACTIONS
+        // =====================================================================
+        function toggleListDrawer() {
+            isListExpanded = !isListExpanded;
+            const drawer = document.getElementById('listDrawer');
+            const hint = document.getElementById('drawerExpandHint');
+
+            if (isListExpanded) {
+                drawer.style.height = '62%';
+                hint.innerHTML = `Hide List <i data-lucide="chevron-down" class="w-3.5 h-3.5"></i>`;
+            } else {
+                drawer.style.height = '64px';
+                hint.innerHTML = `View List <i data-lucide="chevron-up" class="w-3.5 h-3.5"></i>`;
+            }
+            lucide.createIcons();
+        }
+
+        function openSpotDetail(spotId) {
+            selectedSpotId = spotId;
+            if (isListExpanded) toggleListDrawer();
+
+            const spot = parkingSpots.find(s => s.id === spotId);
+            if (!spot) return;
+
+            map.flyTo([spot.lat, spot.lng], 15, { duration: 0.5 });
+            populateDetailSheet(spot);
+            renderAll();
+
+            document.getElementById('spotDetailSheet').classList.remove('translate-y-full');
+        }
+
+        function closeSpotDetail() {
+            selectedSpotId = null;
+            document.getElementById('spotDetailSheet').classList.add('translate-y-full');
+            renderAll();
+        }
+
+        function populateDetailSheet(spot) {
+            const status = getSpotStatus(spot);
+            const dist = calculateDistanceKm(referenceCoords[0], referenceCoords[1], spot.lat, spot.lng);
+
+            const statusBadge = document.getElementById('detailStatusBadge');
+            statusBadge.textContent = status.label;
+            statusBadge.className = `px-2.5 py-0.5 rounded-full text-[11px] font-extrabold ${status.badgeClass}`;
+
+            const feeBadge = document.getElementById('detailFeeBadge');
+            feeBadge.textContent = spot.isFree ? 'Free Parking' : (spot.feeNote || 'Paid Lot');
+
+            document.getElementById('detailTrustScore').textContent = `${spot.trustScore}% Verified`;
+            document.getElementById('detailTitle').textContent = spot.name;
+            document.getElementById('detailArea').textContent = spot.area;
+            document.getElementById('detailDistance').textContent = `${dist} km away`;
+            document.getElementById('detailLandmark').textContent = spot.landmark;
+
+            const availEl = document.getElementById('detailAvailable');
+            availEl.textContent = spot.available;
+            availEl.className = `text-2xl font-extrabold ${status.textClass}`;
+
+            document.getElementById('detailTotal').textContent = spot.total;
+            document.getElementById('detailVehicles').textContent = spot.vehicles;
+            document.getElementById('detailUpdated').textContent = `Updated ${spot.lastUpdated}`;
+
+            document.getElementById('navigateBtn').href = `https://www.google.com/maps/dir/?api=1&destination=${spot.lat},${spot.lng}`;
+
+            const parkBtn = document.getElementById('parkHereBtn');
+            const vacateBtn = document.getElementById('vacateSpotBtn');
+            parkBtn.disabled = spot.available <= 0;
+            parkBtn.classList.toggle('opacity-50', spot.available <= 0);
+            vacateBtn.disabled = spot.available >= spot.total;
+            vacateBtn.classList.toggle('opacity-50', spot.available >= spot.total);
+        }
+
+        async function adjustSpotCount(delta) {
+            if (!selectedSpotId) return;
+            const spot = parkingSpots.find(s => s.id === selectedSpotId);
+            if (!spot) return;
+
+            const nextFree = Math.max(0, Math.min(spot.total, spot.available + delta));
+            if (nextFree === spot.available) return;
+
+            const nowIso = new Date().toISOString();
+            const nextTrust = Math.min(100, (spot.trustScore || 80) + 1);
+
+            spot.available = nextFree;
+            spot.trustScore = nextTrust;
+            spot.lastUpdated = 'Just now';
+            renderAll();
+            showToast(delta > 0 ? 'Vacated (+1 free spot)' : 'Parked (-1 free spot)');
+
+            if (isLiveDbConnected && supabaseClient) {
+                try {
+                    const { error } = await supabaseClient
+                        .from('parking_spots')
+                        .update({
+                            free_spots: nextFree,
+                            trust_score: nextTrust,
+                            updated_at: nowIso
+                        })
+                        .eq('id', spot.id);
+
+                    if (error) throw error;
+                } catch (err) {
+                    console.warn('Supabase update fallback:', err.message);
+                    showToast('Updated locally (Supabase sync error)');
+                }
+            }
+        }
+
+        async function verifySpotCount() {
+            if (!selectedSpotId) return;
+            const spot = parkingSpots.find(s => s.id === selectedSpotId);
+            if (!spot) return;
+
+            const nextTrust = Math.min(100, (spot.trustScore || 80) + 2);
+            const nowIso = new Date().toISOString();
+
+            spot.trustScore = nextTrust;
+            spot.lastUpdated = 'Just now';
+            renderAll();
+            showToast(`Verified ${spot.name} (+2%)`);
+
+            if (isLiveDbConnected && supabaseClient) {
+                try {
+                    const { error } = await supabaseClient
+                        .from('parking_spots')
+                        .update({
+                            trust_score: nextTrust,
+                            updated_at: nowIso
+                        })
+                        .eq('id', spot.id);
+
+                    if (error) throw error;
+                } catch (err) {
+                    console.warn('Supabase verify fallback:', err.message);
+                    showToast('Verified locally (Supabase sync error)');
+                }
+            }
+        }
+
+        // =====================================================================
+        // 7. 'INSERT NEW PARKING SPOT' MODAL & SUPABASE INSERT
+        // =====================================================================
+        function openInsertModal() {
+            const coords = pickedPinCoords || [map.getCenter().lat, map.getCenter().lng];
+            document.getElementById('insertSpotLat').value = Number(coords[0]).toFixed(6);
+            document.getElementById('insertSpotLng').value = Number(coords[1]).toFixed(6);
+            setInsertCostMode('free');
+            handleZoneSelectChange();
+
+            const modal = document.getElementById('insertModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+            lucide.createIcons();
+        }
+
+        function closeInsertModal() {
+            const modal = document.getElementById('insertModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function fillCoordsFromMapCenter() {
+            const center = map.getCenter();
+            document.getElementById('insertSpotLat').value = Number(center.lat).toFixed(6);
+            document.getElementById('insertSpotLng').value = Number(center.lng).toFixed(6);
+            placePickedPin([center.lat, center.lng]);
+            showToast('Set coordinates to map center');
+        }
+
+        function handleZoneSelectChange() {
+            const val = document.getElementById('insertSpotZoneSelect').value;
+            const customWrap = document.getElementById('customZoneWrapper');
+            const hintBox = document.getElementById('landmarkHintBox');
+            const customInput = document.getElementById('insertSpotCustomZone');
+
+            if (val === 'custom') {
+                customWrap.classList.remove('hidden');
+                hintBox.classList.add('hidden');
+                customInput.required = true;
+            } else {
+                customWrap.classList.add('hidden');
+                hintBox.classList.remove('hidden');
+                customInput.required = false;
+            }
+        }
+
+        function setInsertCostMode(mode) {
+            const isPaid = mode === 'paid';
+            document.getElementById('insertIsPaid').value = isPaid ? 'true' : 'false';
+
+            const freeBtn = document.getElementById('costFreeBtn');
+            const paidBtn = document.getElementById('costPaidBtn');
+
+            if (!isPaid) {
+                freeBtn.className = 'py-2 px-3 rounded-xl text-xs font-extrabold border transition-all bg-emerald-50 text-emerald-800 border-emerald-400';
+                paidBtn.className = 'py-2 px-3 rounded-xl text-xs font-extrabold border transition-all bg-slate-50 text-slate-600 border-slate-200';
+            } else {
+                paidBtn.className = 'py-2 px-3 rounded-xl text-xs font-extrabold border transition-all bg-amber-50 text-amber-800 border-amber-400';
+                freeBtn.className = 'py-2 px-3 rounded-xl text-xs font-extrabold border transition-all bg-slate-50 text-slate-600 border-slate-200';
+            }
+        }
+
+        function upsertSpotInState(spotObj) {
+            const idx = parkingSpots.findIndex(s => s.id === spotObj.id);
+            if (idx >= 0) {
+                parkingSpots[idx] = spotObj;
+            } else {
+                parkingSpots.unshift(spotObj);
+            }
+        }
+
+        async function submitInsertSpot(e) {
+            e.preventDefault();
+
+            const name = document.getElementById('insertSpotName').value.trim();
+            if (!name) return;
+
+            const zoneSelect = document.getElementById('insertSpotZoneSelect').value;
+            const customZone = document.getElementById('insertSpotCustomZone').value.trim();
+            const zone = zoneSelect === 'custom' ? (customZone || 'Jorhat') : zoneSelect;
+
+            const lat = parseFloat(document.getElementById('insertSpotLat').value);
+            const lng = parseFloat(document.getElementById('insertSpotLng').value);
+            if (Number.isNaN(lat) || Number.isNaN(lng)) {
+                showToast('Please enter valid latitude and longitude');
+                return;
+            }
+
+            const totalSpots = Math.max(1, parseInt(document.getElementById('insertTotalSpots').value, 10) || 1);
+            const rawFree = parseInt(document.getElementById('insertFreeSpots').value, 10);
+            const freeSpots = Math.max(0, Math.min(totalSpots, Number.isNaN(rawFree) ? 0 : rawFree));
+
+            const vehicleTypes = [];
+            if (document.getElementById('veh2W').checked) vehicleTypes.push('2w');
+            if (document.getElementById('veh4W').checked) vehicleTypes.push('4w');
+            if (vehicleTypes.length === 0) vehicleTypes.push('2w');
+
+            const isPaid = document.getElementById('insertIsPaid').value === 'true';
+            const nowIso = new Date().toISOString();
+            const spotId = `spot-${Date.now()}`;
+
+            const submitBtn = document.getElementById('insertSubmitBtn');
+            submitBtn.disabled = true;
+
+            const payloadRow = {
+                id: spotId,
+                name,
+                zone,
+                lat,
+                lng,
+                free_spots: freeSpots,
+                total_spots: totalSpots,
+                vehicle_types: vehicleTypes,
+                is_paid: isPaid,
+                trust_score: 80,
+                updated_at: nowIso
+            };
+
+            let finalSpot = mapSupabaseRowToSpot(payloadRow);
+
+            if (isLiveDbConnected && supabaseClient) {
+                try {
+                    const { data, error } = await supabaseClient
+                        .from('parking_spots')
+                        .insert(payloadRow)
+                        .select()
+                        .single();
+
+                    if (error) throw error;
+                    if (data) {
+                        finalSpot = mapSupabaseRowToSpot(data);
+                    }
+                    showToast(`Inserted "${finalSpot.name}" to Live DB`);
+                } catch (err) {
+                    console.warn('Supabase insert fallback:', err.message);
+                    showToast(`Added "${finalSpot.name}" locally (DB fallback)`);
+                }
+            } else {
+                showToast(`Inserted "${finalSpot.name}" in Local Demo Mode`);
+            }
+
+            upsertSpotInState(finalSpot);
+
+            if (pickedPinMarker) {
+                map.removeLayer(pickedPinMarker);
+                pickedPinMarker = null;
+            }
+            pickedPinCoords = null;
+
+            document.getElementById('insertSpotForm').reset();
+            submitBtn.disabled = false;
+            closeInsertModal();
+            renderAll();
+            openSpotDetail(finalSpot.id);
+        }
+
+        // =====================================================================
+        // 8. LIVE SIMULATION & TOAST NOTIFICATIONS
+        // =====================================================================
+        function toggleLiveSimulation() {
+            const btn = document.getElementById('liveSimBtn');
+            const icon = document.getElementById('liveSimIcon');
+            const text = document.getElementById('liveSimText');
+
+            if (liveSimInterval) {
+                clearInterval(liveSimInterval);
+                liveSimInterval = null;
+                btn.className = 'flex items-center gap-1 px-2 py-1.5 rounded-xl text-[10px] font-bold border transition-all bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200 active:scale-95';
+                icon.classList.remove('text-emerald-600', 'animate-pulse');
+                text.textContent = 'Sim';
+                showToast('Simulated activity paused');
+            } else {
+                btn.className = 'flex items-center gap-1 px-2 py-1.5 rounded-xl text-[10px] font-bold border transition-all bg-emerald-50 text-emerald-800 border-emerald-300 shadow-sm active:scale-95';
+                icon.classList.add('text-emerald-600', 'animate-pulse');
+                text.textContent = 'Sim ON';
+                showToast('Simulated Jorhat activity ON');
+
+                liveSimInterval = setInterval(() => {
+                    if (!parkingSpots.length) return;
+                    const idx = Math.floor(Math.random() * parkingSpots.length);
+                    const spot = parkingSpots[idx];
+                    const delta = Math.random() > 0.45 ? 1 : -1;
+                    const nextVal = Math.max(0, Math.min(spot.total, spot.available + delta));
+
+                    if (nextVal !== spot.available) {
+                        spot.available = nextVal;
+                        spot.lastUpdated = 'Just now';
+                        renderAll();
+                        const verb = delta > 0 ? 'vacated' : 'parked at';
+                        showToast(`Sim: Driver ${verb} ${spot.name} (${spot.available} free)`);
+                    }
+                }, 8000);
+            }
+        }
+
+        let toastTimer;
+        function showToast(message) {
+            const toast = document.getElementById('activityToast');
+            document.getElementById('activityToastText').textContent = message;
+            toast.classList.remove('opacity-0', '-translate-y-2');
+            toast.classList.add('opacity-100', 'translate-y-0');
+
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => {
+                toast.classList.remove('opacity-100', 'translate-y-0');
+                toast.classList.add('opacity-0', '-translate-y-2');
+            }, 3400);
+        }
+    </script>
+</body>
+</html>
